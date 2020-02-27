@@ -22,65 +22,63 @@ class Customer:
     """
 
 
-    def __init__(self, number, entry_time, initial_pmf, transition_matrix, exit_condition='checkout'):
-        self.number = number
-        self.entry_time = entry_time
+    def __init__(self, number, initial_pmf, transition_matrix):
+
+        assert np.all(initial_pmf.index.isin(transition_matrix.index))
         self.initial_pmf = initial_pmf
-        self.transition_matrix = transition_matrix
-        self.exit_condition = exit_condition
-        self.history = []
-        self._time_step = datetime.timedelta(0,60)
+        self.transition_matrix = transition_proba_minutely
+
+        self.number = number
         self.__set_initial_state__()
-        self.instantiated_at = datetime.datetime.now()
+        self.current_state = self.__get_initial_state__()
 
 
     def __repr__(self):
         return f"Customer {self.number}" #and history {', '.join(self.history)}
 
     def __str__(self):
-        return f"Customer {self.number}, entry at {self.entry_time}, {self.initial_state}"
+        return f"Customer {self.number}" #", entry at {self.entry_time}, {self.initial_state}"
 
     def __set_initial_state__(self):
         """
         randomly selects an initial state from initial_pmf
         """
         self.initial_state  = choice(self.initial_pmf.index, 1, p=self.initial_pmf)[0]
-        logging.debug(f"Initial state for customer with entry time {self.entry_time} is {self.initial_state}")
 
     def __get_initial_state__(self):
         return self.initial_state
 
-#     @property
-#     def initial_state(self):
-#         return self.__initial_state
 
-#     @initial_state.getter
-#     def initial_state(self):
-#         return self.__initial_state
+    @property
+    def __record__(self):
+        return self.current_state
 
-#     @initial_state.setter
-#     def initial_state(self):
-# #         self.__initial_state = init
-#         self.__initial_state  = choice(self.initial_pmf.index, 1, p=self.initial_pmf)[0]
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        record = self.__record__
+        tm = self.transition_matrix.loc[self.current_state].dropna()
+        self.current_state = choice(tm.index, 1, p=tm)[0]
+        return record
+
+class JoeCustomer(Customer):
+    """
+    Customer with initial_pmf and transition_matrix based on average of all customers
+    """
 
 
-    def go_shopping(self):
-        time_elapsed = datetime.timedelta(0,0)
+    def __init__(self, number):
 
-        current_time = self.entry_time
-        current_state = self.__get_initial_state__()
-#         current_state = self.__initial_state
-        record = (current_time, current_state)
-        self.history.append(record)
-        yield record
+        self.initial_pmf = initial_choice_proba
+        self.transition_matrix = transition_matrix
 
-        while current_state != self.exit_condition:
-            current_time += self._time_step
-            tm = self.transition_matrix.loc[current_state].dropna()
-            current_state = choice(tm.index, 1, p=tm)[0]
-            record = (current_time, current_state)
-            self.history.append(record)
-            yield record
+        assert np.all(self.initial_pmf.index.isin(self.transition_matrix.index))
+
+
+        self.number = number
+        self.__set_initial_state__()
+        self.current_state = self.__get_initial_state__()
 
 
 class SuperMarket:
@@ -101,7 +99,7 @@ class SuperMarket:
     _______
     attributes:
     records (...): movement records for all customers that have been in the supermarket
-    customer_counter (int): the number of customers that have passed through the supermarket
+    turnstile_counter (int): the number of customers that have passed through the supermarket
 
     _______
     methods:
@@ -112,13 +110,19 @@ class SuperMarket:
     save_records
 
     """
-    customers = []
-    records = []
-    customer_counter = 0
+    customers = {}
+    turnstile_counter = 0
+    records_df = pd.DataFrame()
 
-    def __init__(aisles, exit_state, customers=None,
-        self, opening_time="09:00", closing_time="17:00",
-        time_step=60, default_transition_matrix=None,
+    at_checkout = []
+    checkout_records = pd.DataFrame()
+    queuing_times = pd.DataFrame()
+
+    def __init__(
+        self, aisles, n_checkouts=1, checkout_rate=0.5,
+        exit_state="checkout", customers=None,
+        opening_time="09:00", closing_time="17:00", time_step=60,
+        default_transition_matrix=None,
         default_initial_pmf=None,
     ):
         self.aisles = aisles
@@ -129,34 +133,145 @@ class SuperMarket:
         self.closing_time = pd.to_datetime(closing_time).time()
         self.time_step = datetime.timedelta(0,time_step)
 
+        assert n_checkouts > 0 and checkout_rate > 0
+        self.n_checkouts = n_checkouts
+        self.checkout_rate = checkout_rate
+
 
     def __repr__():
         return "I am a SuperMarket"
 
 
-    def add_customer(
-    self, entry_time, number=None, transition_matrix=None, initial_pmf=None,
+    def choose_customer_type(self, time, day):
+        """
+        Select the customer class to choose based on time and day
+        """
+#         if not isinstance(transition_matrix, pd.DataFrame):
+#             if isinstance(self.default_transition_matrix, pd.DataFrame):
+#                 transition_matrix = self.default_transition_matrix
+#             else:
+#                 raise Exception('No transition matrix found.')
+
+#         if not isinstance(initial_pmf, pd.DataFrame):
+#             if isinstance(self.default_initial_pmf, pd.DataFrame):
+#                 initial_pmf = self.default_initial_pmf
+#             else:
+#                 raise Exception('No initial probability mass function found.')
+
+        ...
+
+        return JoeCustomer
+
+    def add_customers(self, n_customers, customer_class=JoeCustomer,
+                      transition_matrix=None, initial_pmf=None,
     ):
         """
-        Add a customer to the supermarket
+        Add n new customers to the supermarket
         """
 
-        if not isinstance(transition_matrix, pd.DataFrame):
-            if isinstance(self.default_transition_matrix, pd.DataFrame):
-                transition_matrix = self.default_transition_matrix
-            else:
-                raise Exception('No transition matrix found.')
+        for n in range(n_customers):
 
-        if not isinstance(initial_pmf, pd.DataFrame):
-            if isinstance(self.default_initial_pmf, pd.DataFrame):
-                initial_pmf = self.default_initial_pmf
-            else:
-                raise Exception('No initial probability mass function found.')
+            self.customers[self.turnstile_counter] = customer_class(self.turnstile_counter)
+            self.queuing_times.loc[self.turnstile_counter,"time"] = self.time_step * 0
+            self.turnstile_counter += 1
 
-        self.customers.append(
-            Customer(
-            self.customer_counter, entry_time, initial_pmf,
-            transition_matrix, self.exit_state
-            )
-        )
-        self.customer_counter += 1
+    def get_n_new_customers(self):
+        """
+        Choose the number of new customers that should be added in the current timestep
+        """
+        ...
+        return 2
+
+    def yield_customer_locations(self, customer_list):
+        """
+        Get the new locations for every customer in the supermarket
+        """
+        for i, c in customer_list.items():
+            try:
+                yield np.array([(i, next(c))], dtype=[('customer_no', 'int32'), ('location', 'U10')])
+            except StopIteration:
+                pass
+
+    def append_records(self, time):
+        """
+        Get customer records for the current timestep and append them to the supermarket records df
+        """
+        recs = self.yield_customer_locations(self.customers)
+
+        self.new_records = np.array([r for r in recs]).reshape(-1)
+        self.new_records = pd.DataFrame(self.new_records, index=range(len(self.new_records)))
+        self.new_records['timestamp'] = time
+
+        self.records_df = self.records_df.append(self.new_records, ignore_index=True)
+
+    def work_checkout(self):
+        """
+        Operate the checkouts so the good people can go home and get on with their lives.
+        If self.checkout_rate < 1, use a Binomial distribution with trial number equal to
+        the number of open checkouts to sample the number of customers that get to leave
+        each minute.
+        If self.checkout_rate >= 1, that number of customers are processed from each checkout
+        every minute
+        """
+        if self.checkout_rate < 1:
+            max_processed = np.random.binomial(self.n_checkouts, self.checkout_rate)
+        else:
+            max_processed = self.checkout_rate
+        logging.debug(f"Max of {max_processed} customers may be checked out")
+
+        leaving = []
+        n_processed = 0
+        logging.debug(f"currently at checkout: {self.at_checkout}")
+
+        for cust in self.at_checkout:
+            if n_processed >= max_processed:
+                break
+            leaving.append(cust)
+            self.customers.pop(cust) # could use None as second argument
+            n_processed += 1
+
+        logging.debug(f"{n_processed} customers checked out: {leaving}")
+        for cust in leaving:
+            self.at_checkout.remove(cust)
+
+        self.queuing_times.loc[self.at_checkout,'time'] += self.time_step
+
+
+    def day_in_the_life(self, date):
+        """
+        Simulate a day's shopping
+
+        Return a dataframe with the day's customer records
+        """
+        # initialise records and containers
+        checked_out = np.array([-999])
+
+        ot = datetime.timedelta(days=self.opening_time.hour*1/24, seconds=self.opening_time.minute*60)
+        ct = datetime.timedelta(days=self.closing_time.hour*1/24, seconds=self.closing_time.minute*60)
+        time_range = pd.timedelta_range(ot, ct, freq=self.time_step)
+
+
+        for time in time_range:
+            logging.debug(f"Time is {time}")
+
+            n_new_customers = self.get_n_new_customers()
+            customer_type = self.choose_customer_type(time, date.dayofweek)
+
+            self.add_customers(n_new_customers, customer_type)
+
+            self.append_records(time)
+
+            new_at_checkout = self.new_records.loc[self.new_records['location']==exit_state,
+                                                   "customer_no"].tolist()
+            new_at_checkout = [n for n in new_at_checkout if n not in self.at_checkout]
+            logging.debug(f"new to checkout {new_at_checkout}")
+
+            self.at_checkout += new_at_checkout
+            self.work_checkout()
+
+            self.checkout_records.loc[time,"queue_length"] = len(self.at_checkout)
+
+        ### maybe call this datetime to avoid confusion with the dateless version?
+        self.records_df['datetime'] = self.records_df['timestamp'] + date
+
+        return records_df
