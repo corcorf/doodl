@@ -6,6 +6,8 @@ import numpy.ma as ma
 import datetime
 import logging
 import matplotlib.pyplot as plt
+from matplotlib import cm
+from matplotlib.colors import ListedColormap, LinearSegmentedColormap
 import seaborn as sns
 sns.set()
 from imageio import imread, imwrite
@@ -245,13 +247,7 @@ class SuperMarket:
     save_records
 
     """
-    customers = {}
-    turnstile_counter = 0
-    records_df = pd.DataFrame()
 
-    at_checkout = []
-    checkout_records = pd.DataFrame()
-    queuing_times = pd.DataFrame()
 
     def __init__(
         self, aisles, n_checkouts=1, checkout_rate=0.5,
@@ -271,6 +267,8 @@ class SuperMarket:
         assert n_checkouts > 0 and checkout_rate > 0
         self.n_checkouts = n_checkouts
         self.checkout_rate = checkout_rate
+
+        self.reset_records()
 
 
     def __repr__():
@@ -293,33 +291,47 @@ class SuperMarket:
         ...
         return 2
 
+    @property
+    def time_range(self):
+        """Get a pandas timedelta_range object for the supermarket's opening times and timestep"""
+        ot = datetime.timedelta(days=self.opening_time.hour*1/24, seconds=self.opening_time.minute*60)
+        ct = datetime.timedelta(days=self.closing_time.hour*1/24, seconds=self.closing_time.minute*60)
+        return pd.timedelta_range(ot, ct, freq=self.time_step)
+
+    def reset_records(self):
+        self.customers = {}
+        self.turnstile_counter = 0
+        self.records_df = pd.DataFrame()
+
+        self.at_checkout = []
+        self.checkout_records = pd.DataFrame()
+        self.queuing_times = pd.DataFrame()
+
     def add_customers(self):
         """
         Add new customers to the supermarket
         """
+        logging.debug(f"Adding {self.n_new_customers} new customers")
         for n in range(self.n_new_customers):
-
             self.customers[self.turnstile_counter] = self.customer_type(self.turnstile_counter)
             self.queuing_times.loc[self.turnstile_counter,"time"] = self.time_step * 0
             self.turnstile_counter += 1
+            logging.debug(f"{self.turnstile_counter} customers have passed the turnstile")
 
 
-
-    def yield_customer_locations(self, customer_list):
+    def yield_customer_locations(self):
         """
         Get the new locations for every customer in the supermarket
         """
-        for i, c in customer_list.items():
-            try:
-                yield np.array([(i, next(c))], dtype=[('customer_no', 'int32'), ('location', 'U10')])
-            except StopIteration:
-                pass
+        for i, c in self.customers.items():
+            yield np.array([(i, next(c))], dtype=[('customer_no', 'int32'), ('location', 'U10')])
+
 
     def append_new_records(self, time):
         """
         Get customer records for the current timestep and append them to the supermarket records df
         """
-        recs = self.yield_customer_locations(self.customers)
+        recs = self.yield_customer_locations()
 
         self.new_records = np.array([r for r in recs]).reshape(-1)
         self.new_records = pd.DataFrame(self.new_records, index=range(len(self.new_records)))
@@ -369,20 +381,17 @@ class SuperMarket:
 
 
     def update_queue_records(self, time):
+        """Update the records of customer queue lengths and total in queue at each time"""
         self.queuing_times.loc[self.at_checkout,'time'] += self.time_step
         self.checkout_records.loc[time,"queue_length"] = len(self.at_checkout)
 
     def add_date_to_records(self, date):
+        """Add the date to the dataframe of customer records"""
         self.records_df['datetime'] = self.records_df['timestamp'] + date
 
-    @property
-    def time_range(self):
-        """Get a pandas timedelta_range object for the supermarket's opening times and timestep"""
-        ot = datetime.timedelta(days=self.opening_time.hour*1/24, seconds=self.opening_time.minute*60)
-        ct = datetime.timedelta(days=self.closing_time.hour*1/24, seconds=self.closing_time.minute*60)
-        return pd.timedelta_range(ot, ct, freq=self.time_step)
 
     def get_new_customers(self):
+        """Add new customers to the simulation"""
         self.add_customers()
 
     def day_in_the_life(self, date=None):
@@ -391,6 +400,7 @@ class SuperMarket:
 
         Return a dataframe with the day's customer records
         """
+        self. reset_records()
 
         for time in self.time_range:
             logging.debug(f"Time is {time}")
@@ -432,6 +442,9 @@ class SuperMarket:
         self.checkout_bottom = 600
         self.checkout_section_width = 350
 
+        # arguments for cv2 text
+        self.text_colour = (255, 0, 0)
+
     def set_up_visualisation_matrix_for_aisles(self):
         """Set up the image masks for the aisle customer icons"""
         for i,a in enumerate(self.aisles[:-1]):
@@ -472,25 +485,92 @@ class SuperMarket:
         self.set_up_visualisation_matrix_for_aisles()
         self.set_up_visualisation_matrix_for_checkouts()
 
+    def add_text_line(
+            self, frame, text, xul,yul,
+            font=cv2.FONT_HERSHEY_SIMPLEX,fontScale=1,
+            text_colour=None,
+            thickness = 2,
+        ):
+        """Add a single line of text to the visualisation using cv2"""
+        if text_colour==None:
+            text_colour = self.text_colour
+
+        org = (xul,yul)
+        return cv2.putText(frame, text, org, font, fontScale, text_colour, thickness, cv2.LINE_AA)
+
+    def add_text_to_visualisation(self, frame, time, counters):
+        """Add multiple lines of text to the visualisation for the time and customer counters"""
+        ss = time.seconds
+        time_string = "Time: {:02d}:{:02d}".format(ss//3600,(ss-(ss//3600)*3600)//60)
+        frame = self.add_text_line(frame, time_string, 80, 100)
+
+        counter_text_left = 680
+        counter_num_left = 870
+        l1_top = 470
+        spacing = 40
+
+        for i, key_val_pair in enumerate(counters.items()):
+            key, value = key_val_pair
+            frame = self.add_text_line(frame, f"{key}:", counter_text_left, l1_top + i * spacing)
+            frame = self.add_text_line(frame, "{:03d}".format(value), counter_num_left, l1_top + i * spacing)
+
+        return frame
+
     def loop_frames(self, df):
-        # arguments for cv2 text
-        org = (80,100)
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        fontScale = 1
-        text_colour = (0, 0, 0)
-        thickness = 2
+        """Create frames in visualisation for every timestep"""
 
         for time, data in df.iterrows():
             frame = self.img.copy()
 
+            counters = {"Total":0, "Aisles":0, "Checkout":0}
+
             for aisle, ncustomers in data.iteritems():
                 mask = ma.where((self.visualisation_matrices[aisle]<ncustomers)[:,:,0])
                 frame[mask] = self.aisle_colour
+                counters["Total"] += ncustomers
 
-            ss = time.seconds
-            time_string = "Time: {:02d}:{:02d}".format(ss//3600,(ss-(ss//3600)*3600)//60)
-            frame = cv2.putText(frame, time_string, org, font,
-                           fontScale, text_colour, thickness, cv2.LINE_AA)
+                if aisle=="checkout":
+                    counters["Checkout"] += ncustomers
+
+                else:
+                    counters["Aisles"] += ncustomers
+
+            frame = self.add_text_to_visualisation(frame, time, counters)
+
+            cv2.imshow('frame', frame)
+            if cv2.waitKey(100) & 0xFF == ord('q'):
+                break
+
+        cv2.destroyAllWindows()
+
+    def loop_frames_alt(self, df):
+        """Create frames in visualisation for every timestep"""
+        self.cmap = cm.get_cmap('hsv', self.turnstile_counter)
+        self.test_colour = np.array(self.cmap(100))* 255
+
+        s = self.records_df.set_index(['timestamp', 'location'])['customer_no']
+
+        for time in self.time_range:
+            frame = self.img.copy()
+            counters = {"Total":0, "Aisles":0, "Checkout":0}
+            for aisle in s.loc[time].index.unique():
+                customers = s.loc[(time,aisle)].values
+                ncustomers = len(customers)
+                colours = np.array(self.cmap(customers))* 255
+                cust_col = dict(zip(customers,colours))
+                for i, c in enumerate(customers):
+                    mask = ma.where((self.visualisation_matrices[aisle]==i+1)[:,:,0])
+                    frame[mask] = cust_col[c][:3]
+
+                counters["Total"] += ncustomers
+
+                if aisle=="checkout":
+                    counters["Checkout"] += ncustomers
+
+                else:
+                    counters["Aisles"] += ncustomers
+
+            frame = self.add_text_to_visualisation(frame, time, counters)
 
             cv2.imshow('frame', frame)
             if cv2.waitKey(100) & 0xFF == ord('q'):
@@ -499,8 +579,11 @@ class SuperMarket:
         cv2.destroyAllWindows()
 
     def visualise(self):
+        """
+        Visualise customer movements from the supermarkets records (which must already have been simulated)
+        """
         df = self.records_df.groupby(['timestamp', "location"])['customer_no'].count().unstack(-1).fillna(0).astype(int)
 
         self.set_visualisation_params()
         self.set_up_visualisation_matrices()
-        self.loop_frames(df)
+        self.loop_frames_alt(df)
