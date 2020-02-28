@@ -1,12 +1,17 @@
 import os
 import pandas as pd
 import numpy as np
-import datetime
 from numpy.random import choice
+import numpy.ma as ma
+import datetime
 import logging
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
+from imageio import imread, imwrite
+from scipy.ndimage import rotate
+from PIL import Image
+import cv2
 
 def load_data(path='data'):
     path = 'data'
@@ -178,7 +183,6 @@ class Customer:
     def __get_initial_state__(self):
         return self.initial_state
 
-
     @property
     def __record__(self):
         return self.current_state
@@ -200,14 +204,12 @@ class JoeCustomer(Customer):
     Customer with initial_pmf and transition_matrix based on average of all customers
     """
 
-
     def __init__(self, number):
 
         self.initial_pmf = standard_ipmf
         self.transition_matrix = standard_tm
 
         assert np.all(self.initial_pmf.index.isin(self.transition_matrix.index))
-
 
         self.number = number
         self.__set_initial_state__()
@@ -274,46 +276,34 @@ class SuperMarket:
     def __repr__():
         return "I am a SuperMarket"
 
-
-    def choose_customer_type(self, time, day):
+    @property
+    def customer_type(self):
         """
         Select the customer class to choose based on time and day
         """
-#         if not isinstance(transition_matrix, pd.DataFrame):
-#             if isinstance(self.default_transition_matrix, pd.DataFrame):
-#                 transition_matrix = self.default_transition_matrix
-#             else:
-#                 raise Exception('No transition matrix found.')
-
-#         if not isinstance(initial_pmf, pd.DataFrame):
-#             if isinstance(self.default_initial_pmf, pd.DataFrame):
-#                 initial_pmf = self.default_initial_pmf
-#             else:
-#                 raise Exception('No initial probability mass function found.')
-
         ...
 
         return JoeCustomer
 
-    def add_customers(self, n_customers, customer_class=JoeCustomer,
-                      transition_matrix=None, initial_pmf=None,
-    ):
-        """
-        Add n new customers to the supermarket
-        """
-
-        for n in range(n_customers):
-
-            self.customers[self.turnstile_counter] = customer_class(self.turnstile_counter)
-            self.queuing_times.loc[self.turnstile_counter,"time"] = self.time_step * 0
-            self.turnstile_counter += 1
-
-    def get_n_new_customers(self):
+    @property
+    def n_new_customers(self):
         """
         Choose the number of new customers that should be added in the current timestep
         """
         ...
         return 2
+
+    def add_customers(self):
+        """
+        Add new customers to the supermarket
+        """
+        for n in range(self.n_new_customers):
+
+            self.customers[self.turnstile_counter] = self.customer_type(self.turnstile_counter)
+            self.queuing_times.loc[self.turnstile_counter,"time"] = self.time_step * 0
+            self.turnstile_counter += 1
+
+
 
     def yield_customer_locations(self, customer_list):
         """
@@ -325,7 +315,7 @@ class SuperMarket:
             except StopIteration:
                 pass
 
-    def append_records(self, time):
+    def append_new_records(self, time):
         """
         Get customer records for the current timestep and append them to the supermarket records df
         """
@@ -336,6 +326,16 @@ class SuperMarket:
         self.new_records['timestamp'] = time
 
         self.records_df = self.records_df.append(self.new_records, ignore_index=True)
+
+    def update_checkout(self):
+        """check the new records for any customers who have reached the checkout area"""
+        new_at_checkout = self.new_records.loc[
+            self.new_records['location']==self.exit_state,
+            "customer_no"
+        ].tolist()
+        new_at_checkout = [n for n in new_at_checkout if n not in self.at_checkout]
+        logging.debug(f"new to checkout {new_at_checkout}")
+        self.at_checkout += new_at_checkout
 
     def work_checkout(self):
         """
@@ -367,44 +367,140 @@ class SuperMarket:
         for cust in leaving:
             self.at_checkout.remove(cust)
 
+
+    def update_queue_records(self, time):
         self.queuing_times.loc[self.at_checkout,'time'] += self.time_step
+        self.checkout_records.loc[time,"queue_length"] = len(self.at_checkout)
 
+    def add_date_to_records(self, date):
+        self.records_df['datetime'] = self.records_df['timestamp'] + date
 
-    def day_in_the_life(self, date):
+    @property
+    def time_range(self):
+        """Get a pandas timedelta_range object for the supermarket's opening times and timestep"""
+        ot = datetime.timedelta(days=self.opening_time.hour*1/24, seconds=self.opening_time.minute*60)
+        ct = datetime.timedelta(days=self.closing_time.hour*1/24, seconds=self.closing_time.minute*60)
+        return pd.timedelta_range(ot, ct, freq=self.time_step)
+
+    def get_new_customers(self):
+        self.add_customers()
+
+    def day_in_the_life(self, date=None):
         """
         Simulate a day's shopping
 
         Return a dataframe with the day's customer records
         """
-        # initialise records and containers
-        checked_out = np.array([-999])
 
-        ot = datetime.timedelta(days=self.opening_time.hour*1/24, seconds=self.opening_time.minute*60)
-        ct = datetime.timedelta(days=self.closing_time.hour*1/24, seconds=self.closing_time.minute*60)
-        time_range = pd.timedelta_range(ot, ct, freq=self.time_step)
-
-
-        for time in time_range:
+        for time in self.time_range:
             logging.debug(f"Time is {time}")
 
-            n_new_customers = self.get_n_new_customers()
-            customer_type = self.choose_customer_type(time, date.dayofweek)
-
-            self.add_customers(n_new_customers, customer_type)
-
-            self.append_records(time)
-
-            new_at_checkout = self.new_records.loc[self.new_records['location']==self.exit_state,
-                                                   "customer_no"].tolist()
-            new_at_checkout = [n for n in new_at_checkout if n not in self.at_checkout]
-            logging.debug(f"new to checkout {new_at_checkout}")
-
-            self.at_checkout += new_at_checkout
+            self.get_new_customers()
+            self.append_new_records(time)
+            self.update_checkout()
             self.work_checkout()
+            self.update_queue_records(time)
 
-            self.checkout_records.loc[time,"queue_length"] = len(self.at_checkout)
-
-        ### maybe call this datetime to avoid confusion with the dateless version?
-        self.records_df['datetime'] = self.records_df['timestamp'] + date
+        if date != None:
+            self.add_date_to_records(date)
 
         return self.records_df
+
+    ######## visualisation stuff ############
+    def set_visualisation_params(self):
+        """Set up the parameters for the visualisation function"""
+        self.img = cv2.imread('market.png')
+        self.img_height, self.img_width = self.img.shape[:2]
+
+        self.aisle_colour = [200,0,200]
+        self.checkout_colour = [255, 0, 0]
+        self.square_side = 20
+        self.offset = 80
+        self.no_value = -999
+
+        # parameters for customer icons in aisles
+        self.ncol_aisles = 2
+        self.nrow_aisles = 10
+        self.aisle_icon_divide = 20
+        self.aisles_top = 150
+
+        # parameters for customer icons in checkouts
+        self.cols_per_checkout = 2
+        self.ncol_checkouts = self.n_checkouts * 2
+        self.nrow_checkouts = 23
+        self.checkout_icon_divide = 7
+        self.checkout_bottom = 600
+        self.checkout_section_width = 350
+
+    def set_up_visualisation_matrix_for_aisles(self):
+        """Set up the image masks for the aisle customer icons"""
+        for i,a in enumerate(self.aisles[:-1]):
+            self.visualisation_matrices[a] = np.ones_like(self.img) * self.no_value
+            for loc in range(self.nrow_aisles * self.ncol_aisles):
+                row = loc // self.ncol_aisles
+                col = loc % self.ncol_aisles
+                yul = self.aisles_top + (self.square_side + self.aisle_icon_divide) * row
+                xul = self.offset + int(self.img_width/4) * i + (self.square_side + self.aisle_icon_divide) * col
+
+                self.visualisation_matrices[a][yul:yul+self.square_side, xul:xul+self.square_side] = loc
+
+            mask = self.visualisation_matrices[a]==self.no_value
+            self.visualisation_matrices[a] = ma.masked_array(self.visualisation_matrices[a], mask=mask)
+
+
+    def set_up_visualisation_matrix_for_checkouts(self):
+        """Set up the image masks for the checkout customer icons"""
+        self.visualisation_matrices['checkout'] = np.ones_like(self.img) * self.no_value
+        for loc in range(self.nrow_checkouts * self.ncol_checkouts):
+            row = loc // self.ncol_checkouts
+            col = loc % self.ncol_checkouts
+            yul = self.checkout_bottom - (self.square_side + self.checkout_icon_divide) * row
+            xul = (self.offset + int(self.checkout_section_width/4)
+                                * (col//self.cols_per_checkout)
+                                + (self.square_side + self.checkout_icon_divide) * col)
+            self.visualisation_matrices['checkout'][yul:yul+self.square_side,
+                                                    xul:xul+self.square_side] = loc+1
+
+        mask = self.visualisation_matrices['checkout']==self.no_value
+        self.visualisation_matrices['checkout'] = ma.masked_array(self.visualisation_matrices['checkout'], mask=mask)
+
+    def set_up_visualisation_matrices(self):
+        """Set up the matrices that will be used to add customer icons to the visualisation"""
+
+        self.visualisation_matrices = {}
+
+        self.set_up_visualisation_matrix_for_aisles()
+        self.set_up_visualisation_matrix_for_checkouts()
+
+    def loop_frames(self, df):
+        # arguments for cv2 text
+        org = (80,100)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        fontScale = 1
+        text_colour = (0, 0, 0)
+        thickness = 2
+
+        for time, data in df.iterrows():
+            frame = self.img.copy()
+
+            for aisle, ncustomers in data.iteritems():
+                mask = ma.where((self.visualisation_matrices[aisle]<ncustomers)[:,:,0])
+                frame[mask] = self.aisle_colour
+
+            ss = time.seconds
+            time_string = "Time: {:02d}:{:02d}".format(ss//3600,(ss-(ss//3600)*3600)//60)
+            frame = cv2.putText(frame, time_string, org, font,
+                           fontScale, text_colour, thickness, cv2.LINE_AA)
+
+            cv2.imshow('frame', frame)
+            if cv2.waitKey(100) & 0xFF == ord('q'):
+                break
+
+        cv2.destroyAllWindows()
+
+    def visualise(self):
+        df = self.records_df.groupby(['timestamp', "location"])['customer_no'].count().unstack(-1).fillna(0).astype(int)
+
+        self.set_visualisation_params()
+        self.set_up_visualisation_matrices()
+        self.loop_frames(df)
