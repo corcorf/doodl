@@ -461,6 +461,7 @@ class SuperMarket:
             self.visualisation_matrices[a] = ma.masked_array(self.visualisation_matrices[a], mask=mask)
 
 
+
     def set_up_visualisation_matrix_for_checkouts(self):
         """Set up the image masks for the checkout customer icons"""
         self.visualisation_matrices['checkout'] = np.ones_like(self.img) * self.no_value
@@ -477,6 +478,7 @@ class SuperMarket:
         mask = self.visualisation_matrices['checkout']==self.no_value
         self.visualisation_matrices['checkout'] = ma.masked_array(self.visualisation_matrices['checkout'], mask=mask)
 
+
     def set_up_visualisation_matrices(self):
         """Set up the matrices that will be used to add customer icons to the visualisation"""
 
@@ -484,6 +486,46 @@ class SuperMarket:
 
         self.set_up_visualisation_matrix_for_aisles()
         self.set_up_visualisation_matrix_for_checkouts()
+
+
+    @property
+    def locations_matrix(self):
+        """Create the matrix containing the location numbers for the visualisation"""
+        icon_locations = np.ones_like(self.img) * self.no_value
+        for i,a in enumerate(self.aisles):
+            if a==self.exit_state:
+                for loc in range(self.nrow_checkouts * self.ncol_checkouts):
+                    row = loc // self.ncol_checkouts
+                    col = loc % self.ncol_checkouts
+                    yul = self.checkout_bottom - (self.square_side + self.checkout_icon_divide) * row
+                    xul = (self.offset + int(self.checkout_section_width/4)
+                                        * (col//self.cols_per_checkout)
+                                        + (self.square_side + self.checkout_icon_divide) * col)
+                    icon_locations[yul:yul+self.square_side, xul:xul+self.square_side] = i*1000 + loc
+
+            else:
+                for loc in range(self.nrow_aisles * self.ncol_aisles):
+                    row = loc // self.ncol_aisles
+                    col = loc % self.ncol_aisles
+                    yul = self.aisles_top + (self.square_side + self.aisle_icon_divide) * row
+                    xul = self.offset + int(self.img_width/4) * i + (self.square_side + self.aisle_icon_divide) * col
+                    icon_locations[yul:yul+self.square_side, xul:xul+self.square_side] = i*1000 + loc
+
+        return icon_locations
+
+    def get_customer_colour_df(self):
+        """create data frame to match customer numbers to colours and location numbers for visualisation"""
+        customer_colour_df = self.records_df.sort_values(by=['timestamp','location']).reset_index(drop=True)
+        customer_colour_df = customer_colour_df.drop(columns="datetime")
+        customer_colour_df['idx'] = customer_colour_df.index
+        customer_colour_df = customer_colour_df.set_index(['timestamp', 'location'])
+        customer_colour_df['idx'] = customer_colour_df['idx'] - customer_colour_df.reset_index().groupby(['timestamp', 'location'])['idx'].first()
+        aisle_dict={k:v for v, k in enumerate(self.aisles)}
+        customer_colour_df = customer_colour_df.reset_index(level=1)
+        customer_colour_df['idx'] = customer_colour_df['idx'] + customer_colour_df['location'].apply(aisle_dict.get) * 1000
+        customer_colour_df['colour'] = customer_colour_df['customer_no'].apply(self.cmap).apply(lambda x: x[:3])
+        return customer_colour_df.reset_index().set_index(['timestamp', 'location'])
+
 
     def add_text_line(
             self, frame, text, xul,yul,
@@ -543,32 +585,37 @@ class SuperMarket:
 
         cv2.destroyAllWindows()
 
+
+
     def loop_frames_alt(self, df):
         """Create frames in visualisation for every timestep"""
         self.cmap = cm.get_cmap('hsv', self.turnstile_counter)
         self.test_colour = np.array(self.cmap(100))* 255
 
-        s = self.records_df.set_index(['timestamp', 'location'])['customer_no']
+        # s = self.records_df.set_index(['timestamp', 'location'])['customer_no']
+        # s = records_df.reset_index().set_index(['timestamp', 'location', 'index'])['customer_no'].unstack(1)
+        df = self.get_customer_colour_df()
+        icon_locations = self.locations_matrix
 
         for time in self.time_range:
             frame = self.img.copy()
             counters = {"Total":0, "Aisles":0, "Checkout":0}
-            for aisle in s.loc[time].index.unique():
-                customers = s.loc[(time,aisle)].values
-                ncustomers = len(customers)
-                colours = np.array(self.cmap(customers))* 255
-                cust_col = dict(zip(customers,colours))
-                for i, c in enumerate(customers):
-                    mask = ma.where((self.visualisation_matrices[aisle]==i+1)[:,:,0])
-                    frame[mask] = cust_col[c][:3]
 
-                counters["Total"] += ncustomers
+            customers = df.loc[time]
+            # ncustomers = customers.count()
+            customer_count = customers.reset_index().groupby(['location'])['customer_no'].count()
 
-                if aisle=="checkout":
-                    counters["Checkout"] += ncustomers
+            icons_layer = np.ones_like(icon_locations, dtype=float) * self.no_value
+            for i, col in enumerate(['r','g','b']):
+                loc_to_channel_level =  customers.set_index('idx')['colour'].apply(lambda x: x[i])
+                for loc, level in loc_to_channel_level.iteritems():
+                    icons_layer[:,:,i] = np.where(icon_locations[:,:,i]==loc, level, icons_layer[:,:,i])
 
-                else:
-                    counters["Aisles"] += ncustomers
+            frame = np.where(icons_layer==self.no_value, frame, icons_layer)
+
+            counters["Total"] += customer_count.sum()
+            counters["Checkout"] += customer_count[customer_count.index==self.exit_state].sum()
+            counters["Aisles"] += customer_count[customer_count.index!=self.exit_state].sum()
 
             frame = self.add_text_to_visualisation(frame, time, counters)
 
@@ -579,6 +626,16 @@ class SuperMarket:
         cv2.destroyAllWindows()
 
     def visualise(self):
+        """
+        Visualise customer movements from the supermarkets records (which must already have been simulated)
+        """
+        df = self.records_df.groupby(['timestamp', "location"])['customer_no'].count().unstack(-1).fillna(0).astype(int)
+
+        self.set_visualisation_params()
+        self.set_up_visualisation_matrices()
+        self.loop_frames(df)
+
+    def visualise_alt(self):
         """
         Visualise customer movements from the supermarkets records (which must already have been simulated)
         """
