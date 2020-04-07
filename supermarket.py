@@ -8,6 +8,7 @@ import cv2
 
 from data_processing import get_aisles
 from customers import JoeCustomer
+from cli import get_arguments
 
 
 class SuperMarket:
@@ -567,4 +568,5 @@ def main(n_checkouts=4, checkout_rate=0.8, date="2020-02-27",
 
 
 if __name__ == "__main__":
-    main(4)
+    args = get_arguments()
+    main(**vars(args))
