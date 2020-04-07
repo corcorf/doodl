@@ -1,279 +1,13 @@
-import os
 import pandas as pd
 import numpy as np
-from numpy.random import choice
 import numpy.ma as ma
-import datetime
+from datetime import datetime, timedelta
 import logging
-import matplotlib.pyplot as plt
 from matplotlib import cm
-from matplotlib.colors import ListedColormap, LinearSegmentedColormap
-import seaborn as sns
-from imageio import imread, imwrite
-from scipy.ndimage import rotate
-from PIL import Image
 import cv2
-sns.set()
 
-
-def load_data(path='data'):
-    """
-    load the supermarket customer dataset
-    return the loaded data as a dataframe
-    """
-    path = 'data'
-    data = pd.DataFrame()
-    for file in os.listdir(path):
-        df = pd.read_csv(os.path.join(path, file), sep=';')
-        df['timestamp'] = pd.to_datetime(df['timestamp'],
-                                         format="%Y-%m-%d %H:%M:%S")
-        data = pd.concat([data, df])
-    data = data.sort_values(by=['timestamp']).reset_index(drop=True)
-    return data
-
-
-def get_aisles():
-    """
-    return a list of the aisles in the supermarket
-    """
-    aisles = ['fruit', 'spices', 'dairy', 'drinks', 'checkout']
-    return aisles
-
-
-def get_first_aisle_pmf(df_locations, day='all'):
-    """
-    get probabilities for first aisle visited
-    """
-    aisles = get_aisles()
-    first_aisle_proba = pd.DataFrame(index=aisles)
-
-    if day == 'all':
-        first_aisle_proba['all days']\
-            = df_locations.iloc[:, 0].value_counts()\
-            / df_locations.iloc[:, 0].count()
-    else:
-        first_aisle_proba[f'day {day}']\
-            = df_locations.loc[day].iloc[0].value_counts()\
-            / df_locations.loc[day].iloc[0].count()
-
-    first_aisle_proba = first_aisle_proba.fillna(0).squeeze()
-    return first_aisle_proba
-
-
-def get_customer_locations_by_time(data):
-    """
-    Return a dataframe containing the location of each customer at each time
-    """
-    df_location_by_time = data.sort_values(by=['customer_no', 'timestamp'])
-    df_location_by_time['day'] = df_location_by_time['timestamp'].dt.dayofweek
-    entrance_time = df_location_by_time.groupby(['day', 'customer_no'])\
-                                       .nth(0)['timestamp']
-    df_location_by_time = df_location_by_time.set_index(['day', 'customer_no'])
-    time_elapsed = df_location_by_time['timestamp'] - entrance_time
-    df_location_by_time['time_elapsed']\
-        = time_elapsed.sort_index(level=1).values
-    df_location_by_time\
-        = df_location_by_time.reset_index()\
-                             .set_index(
-                                ['day', 'customer_no', 'time_elapsed']
-                             )['location']
-    time_range = pd.timedelta_range('00S', '3600S', freq='60S')
-    df_location_by_time = df_location_by_time.unstack(-1)\
-                                             .reindex(time_range, axis=1)
-    df_location_by_time = df_location_by_time.fillna(method='ffill', axis=1)
-    return df_location_by_time
-
-
-def get_trans_matrix(df_location_by_time):
-    """
-    set up a dataframe for the transition matrix
-    should have a column and a row for each aisle
-    """
-    aisles = get_aisles()
-    transition_matrix_minutely = pd.DataFrame(columns=aisles,
-                                              index=aisles[:-1])
-    transition_matrix_minutely.index.rename('start aisle', inplace=True)
-    transition_matrix_minutely.columns.rename('next aisle', inplace=True)
-
-    # make a temporary version of the locations dataframe
-    # this should have an extra column to avoid an indexing error later
-    dummy_locations = df_location_by_time.copy()
-    dummy_locations["23:59:59"] = np.nan
-
-    # loop through the aisles, find the table indeces where that aisle appears
-    # "next aisle" is the aisle named in the following column of the same row
-    for a in aisles:
-        instances_a = np.where(dummy_locations == a)
-        instances_next = (instances_a[0], instances_a[1] + 1)
-        transition_matrix_minutely.loc[a]\
-            = pd.Series(dummy_locations.values[instances_next]).value_counts()
-
-    # the total number of transitions from each aisle is the sum along the rows
-    total_transitions = transition_matrix_minutely.sum(axis=1)
-
-    # calculate the probability of each transition by dividing by the
-    # total_transitions from each starting aisle
-    transition_proba_minutely\
-        = transition_matrix_minutely.div(total_transitions, axis=0).fillna(0)
-    return transition_proba_minutely
-
-
-def get_trans_matrix_by_day(data, day='all'):
-    """
-    calculate the transition matrix by day
-    set up a dataframe for the transition matrix
-    should have a column and a row for each aisle
-    """
-    aisles = get_aisles()
-    day_idx = ['all'] + list(range(5))
-    multi_idx = pd.MultiIndex.from_product([day_idx, aisles],
-                                           names=['day', 'start aisle'])
-    transition_matrix_by_day_minutely = pd.DataFrame(columns=aisles,
-                                                     index=multi_idx)
-    transition_matrix_by_day_minutely.columns.rename('next aisle',
-                                                     inplace=True)
-
-    # make a temporary version of the locations dataframe
-    # this should have an extra column to avoid an indexing error later
-    dummy_locations = get_customer_locations_by_time(data)
-    dummy_locations["23:59:59"] = np.nan
-
-    # loop through the aisles, find the table indices where that aisle appears
-    # "next aisle" is the aisle named in the following column of the same row
-    for day in day_idx:
-        for a in aisles:
-            if day == 'all':
-                key = day_idx[1:]
-            else:
-                key = day
-            instances_a = np.where(dummy_locations.loc[key] == a)
-            instances_next = (instances_a[0], instances_a[1] + 1)
-            counts = pd.Series(dummy_locations.loc[key]
-                                              .values[instances_next])\
-                       .value_counts()
-            transition_matrix_by_day_minutely.loc[(day, a)] = counts
-
-    # the total number of transitions from each aisle is the sum along the rows
-    total_transitions_by_day = transition_matrix_by_day_minutely.sum(axis=1)
-
-    # calculate the probability of each transition by dividing by the
-    # total_transitions from each starting aisle
-    transition_proba_by_day_minutely\
-        = transition_matrix_by_day_minutely.div(total_transitions_by_day,
-                                                axis=0)
-    transition_proba_by_day_minutely\
-        = transition_proba_by_day_minutely.fillna(0)
-    return transition_proba_by_day_minutely
-
-
-def joe_tm():
-    """
-    wrapper to get a transition matrix for the average joe customer
-    """
-    data = load_data()
-    df_location_by_time = get_customer_locations_by_time(data)
-    return get_trans_matrix(df_location_by_time)
-
-
-def joe_ipmf():
-    """
-    wrapper to get a n initial probability mass distribution for the average
-    joe customer
-    """
-    data = load_data()
-    df_location_by_time = get_customer_locations_by_time(data)
-    return get_first_aisle_pmf(df_location_by_time, day='all')
-
-
-class Customer:
-    """
-    Class representing a customer in the DOODL supermarket!
-
-    Attributes:
-        entry_time (datetime.datetime): the time at which the customer enters
-                                        the supermarket
-        initial_pmf (pandas.Series): probability mass function for the
-                                     customer's initial state,
-        i.e. which aisle the customer will go to first
-        transition_matrix (pandas.DataFrame): transition matrix containing the
-                                              probability of where the
-        customer will head in the next minute, base on where they are now
-        exit_state (string): the state at which the customer exits the
-                             simulation
-    """
-
-    def __init__(self, number, initial_pmf, transition_matrix):
-        assert np.all(initial_pmf.index.isin(transition_matrix.index))
-        self.initial_pmf = initial_pmf
-        self.transition_matrix = transition_proba_minutely
-
-        self.number = number
-        self.__set_initial_state__()
-        self.current_state = self.__get_initial_state__()
-
-    def __repr__(self):
-        return f"Customer {self.number}"
-
-    def __str__(self):
-        return f"Customer {self.number}"
-
-    def __set_initial_state__(self):
-        """
-        randomly selects an initial state from initial_pmf
-        """
-        self.initial_state = choice(
-                                self.initial_pmf.index,
-                                1,
-                                p=self.initial_pmf
-                            )[0]
-
-    def __get_initial_state__(self):
-        """
-        Return the customer's initial state
-        """
-        return self.initial_state
-
-    @property
-    def __record__(self):
-        """
-        Return the customer's state record
-        """
-        return self.current_state
-
-    def __iter__(self):
-        """
-        Initialise generator for the customer states
-        """
-        return self
-
-    def __next__(self):
-        """
-        Get next customer state
-        """
-        record = self.__record__
-        tm = self.transition_matrix.loc[self.current_state].dropna()
-        self.current_state = choice(tm.index, 1, p=tm)[0]
-        return record
-
-
-standard_ipmf = joe_ipmf()
-standard_tm = joe_tm()
-
-
-class JoeCustomer(Customer):
-    """
-    Customer with initial_pmf and transition_matrix based on average of all
-    customers
-    """
-
-    def __init__(self, number):
-        self.initial_pmf = standard_ipmf
-        self.transition_matrix = standard_tm
-        assert\
-            np.all(self.initial_pmf.index.isin(self.transition_matrix.index))
-        self.number = number
-        self.__set_initial_state__()
-        self.current_state = self.__get_initial_state__()
+from data_processing import get_aisles
+from customers import JoeCustomer
 
 
 class SuperMarket:
@@ -284,8 +18,8 @@ class SuperMarket:
     params:
     aisles (list): list of aisle names in the supermarket
     exit_state (string): state at which customers should leave the supermarket
-    customers (list): list of Customer objects to be included in the
-                      supermarket
+    customers (dict): dictionary of turnstile numbers and Customer objects to
+                      be included in the supermarket
     opening_time (string): time recognisable by pandas.to_datetime at which
                            supermarket opens
     closing_time (string): time recognisable by pandas.to_datetime at which
@@ -311,17 +45,19 @@ class SuperMarket:
     """
 
     def __init__(
-        self, aisles, n_checkouts=1, checkout_rate=0.5,
-        exit_state="checkout", customers=None,
-        opening_time="09:00", closing_time="17:00", time_step=60,
-    ):
+                self, aisles, n_checkouts=1, checkout_rate=0.5,
+                exit_state="checkout", customers=None,
+                opening_time="09:00", closing_time="22:00", time_step=60,
+            ):
         self.aisles = aisles
         self.exit_state = exit_state
-        if customers is not None:
+        if customers is None:
+            self.customers = dict()
+        else:
             self.customers = customers
         self.opening_time = pd.to_datetime(opening_time).time()
         self.closing_time = pd.to_datetime(closing_time).time()
-        self.time_step = datetime.timedelta(0, time_step)
+        self.time_step = timedelta(0, time_step)
 
         assert n_checkouts > 0 and checkout_rate > 0
         self.n_checkouts = n_checkouts
@@ -355,17 +91,17 @@ class SuperMarket:
         Get a pandas timedelta_range object for the supermarket's opening
         times and timestep
         """
-        ot = datetime.timedelta(days=self.opening_time.hour*1/24,
+        ot = timedelta(days=self.opening_time.hour*1/24,
                                 seconds=self.opening_time.minute*60)
-        ct = datetime.timedelta(days=self.closing_time.hour*1/24,
+        ct = timedelta(days=self.closing_time.hour*1/24,
                                 seconds=self.closing_time.minute*60)
         return pd.timedelta_range(ot, ct, freq=self.time_step)
 
     def reset_records(self):
         """
-        reset customer to initialisation state
+        reset supermarket to initialisation state
         """
-        self.customers = {}
+        # self.customers = {}
         self.turnstile_counter = 0
         self.records_df = pd.DataFrame()
 
@@ -493,7 +229,7 @@ class SuperMarket:
             self.work_checkout()
             self.update_queue_records(time)
 
-        if date is None:
+        if date is not None:
             self.add_date_to_records(date)
 
         return self.records_df
@@ -632,17 +368,17 @@ class SuperMarket:
         create data frame to match customer numbers to colours and location
         numbers for visualisation
         """
+        group_cols = ['timestamp', "location"]
         customer_colour_df = self.records_df\
-                                 .sort_values(by=['timestamp', 'location'])\
+                                 .sort_values(by=group_cols)\
                                  .reset_index(drop=True)
         customer_colour_df = customer_colour_df.drop(columns="datetime")
         customer_colour_df['idx'] = customer_colour_df.index
-        customer_colour_df = customer_colour_df.set_index(['timestamp',
-                                                           'location'])
+        customer_colour_df = customer_colour_df.set_index(group_cols)
         customer_colour_df['idx'] = (
             customer_colour_df['idx']
             - customer_colour_df.reset_index()
-                                .groupby(['timestamp', 'location'])['idx']
+                                .groupby(group_cols)['idx']
                                 .first()
         )
         aisle_dict = {k: v for v, k in enumerate(self.aisles)}
@@ -655,8 +391,7 @@ class SuperMarket:
             customer_colour_df['customer_no'].apply(self.cmap)
                                              .apply(lambda x: x[:3])
         )
-        return customer_colour_df.reset_index().set_index(['timestamp',
-                                                           'location'])
+        return customer_colour_df.reset_index().set_index(group_cols)
 
     def add_text_line(
                 self, frame, text, xul, yul,
@@ -781,38 +516,54 @@ class SuperMarket:
         Visualise customer movements from the supermarkets records (which must
         already have been simulated)
         """
-        df = self.records_df.groupby(['timestamp', "location"])['customer_no']\
-                            .count().unstack(-1).fillna(0).astype(int)
+        if self.records_df.size:
+            group_cols = ['timestamp', "location"]
+            df = self.records_df.groupby(group_cols)['customer_no']\
+                                .count().unstack(-1).fillna(0).astype(int)
 
-        self.set_visualisation_params()
-        self.set_up_visualisation_matrices()
-        self.loop_frames(df)
+            self.set_visualisation_params()
+            self.set_up_visualisation_matrices()
+            self.loop_frames(df)
+        else:
+            logging.warning("Supermarket has no records to visualize")
 
     def visualise_alt(self):
         """
-        Visualise customer movements from the supermarkets records (which must
-        already have been simulated)
+        Alternative visualisation of customer movements from the supermarkets
+        records (which must have already been simulated)
         """
-        df = self.records_df.groupby(['timestamp', "location"])['customer_no']\
-                            .count().unstack(-1).fillna(0).astype(int)
+        if self.records_df.size:
+            group_cols = ['timestamp', "location"]
+            df = self.records_df.groupby(group_cols)['customer_no']\
+                                .count().unstack(-1).fillna(0).astype(int)
 
-        self.set_visualisation_params()
-        self.set_up_visualisation_matrices()
-        self.loop_frames_alt(df)
+            self.set_visualisation_params()
+            self.set_up_visualisation_matrices()
+            self.loop_frames_alt(df)
+        else:
+            logging.warning("Supermarket has no records to visualize")
 
 
-def main(n_checkouts):
+def main(n_checkouts=4, checkout_rate=0.8, date="2020-02-27",
+         save_records=False, filename="simulated_customer_records.csv",
+         show_colour=False):
     """
     Run and visualise simulation with n_checkouts
     """
-    # data = load_data()
     aisles = get_aisles()
-    # df_location_by_time = get_customer_locations_by_time(data)
-    # transition_matrix = get_trans_matrix(df_location_by_time)
-    # initial_choice_proba = get_first_aisle_pmf(df_location_by_time, day='all')
+    if date is None:
+        date = datetime.now().date()
+    date = pd.to_datetime(date)
     doodlmarkt = SuperMarket(aisles=aisles, n_checkouts=n_checkouts,
+                             checkout_rate=checkout_rate,
                              exit_state="checkout", closing_time="22:00")
-    doodlmarkt.visualise()
+    records = doodlmarkt.day_in_the_life(date)
+    if save_records:
+        records.to_csv(filename)
+    if show_colour:
+        doodlmarkt.visualise_alt()
+    else:
+        doodlmarkt.visualise()
 
 
 if __name__ == "__main__":
