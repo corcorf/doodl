@@ -96,9 +96,9 @@ class SuperMarket:
         times and timestep
         """
         ot = timedelta(days=self.opening_time.hour*1/24,
-                                seconds=self.opening_time.minute*60)
+                       seconds=self.opening_time.minute*60)
         ct = timedelta(days=self.closing_time.hour*1/24,
-                                seconds=self.closing_time.minute*60)
+                       seconds=self.closing_time.minute*60)
         return pd.timedelta_range(ot, ct, freq=self.time_step)
 
     def reset_records(self):
@@ -204,6 +204,8 @@ class SuperMarket:
         """
         self.queuing_times.loc[self.at_checkout, 'time'] += self.time_step
         self.checkout_records.loc[time, "queue_length"] = len(self.at_checkout)
+        self.checkout_records.loc[time, "mean queue time"]\
+            = self.queuing_times['time'].mean()
 
     def add_date_to_records(self, date):
         """
@@ -411,28 +413,70 @@ class SuperMarket:
         return cv2.putText(frame, text, org, font, fontScale, text_colour,
                            thickness, cv2.LINE_AA)
 
-    def add_text_to_visualisation(self, frame, time, counters):
+    def add_time_to_frame(self, time, frame):
         """
-        Add multiple lines of text to the visualisation for the time and
-        customer counters
+        add a time string to the frame
         """
         ss = time.seconds
         time_string = "Time: {:02d}:{:02d}".format(ss//3600,
                                                    (ss-(ss//3600)*3600)//60)
         frame = self.add_text_line(frame, time_string, 80, 100)
+        return frame
 
-        counter_text_left = 680
-        counter_num_left = 870
-        l1_top = 470
-        spacing = 40
-
+    def add_counters_to_frame(self, counters, frame):
+        """
+        Add the current customer counters to the frame
+        """
+        counter_text_left = 673
+        counter_num_left = 841
+        l1_top = 460
+        spacing = 30
+        scale = 0.8
+        thickness = 1
+        frame = self.add_text_line(frame, "Customers:",
+                                   counter_text_left, l1_top,
+                                   fontScale=scale, thickness=thickness)
         for i, key_val_pair in enumerate(counters.items()):
             key, value = key_val_pair
-            frame = self.add_text_line(frame, f"{key}:", counter_text_left,
-                                       l1_top + i * spacing)
+            frame = self.add_text_line(frame, f"{key}", counter_text_left,
+                                       l1_top + (i+1) * spacing,
+                                       fontScale=scale, thickness=thickness)
             frame = self.add_text_line(frame, "{:03d}".format(value),
-                                       counter_num_left, l1_top + i * spacing)
+                                       counter_num_left,
+                                       l1_top + (i+1) * spacing,
+                                       fontScale=scale, thickness=thickness)
+        return frame
 
+    def add_queue_time_to_frame(self, time, frame):
+        """
+        Add the current mean customer queue time to the frame
+        """
+        text_left = 80
+        l1_top = 460
+        spacing = 30
+        scale = 0.8
+        thickness = 1
+        # mean_q_time = self.queuing_times['time'].mean()
+        mean_q_time = self.checkout_records.loc[time, "mean queue time"]
+        q_time_str = "{:02d} min, {:02d} sec"
+        q_time_str = q_time_str.format(mean_q_time.components.minutes,
+                                       mean_q_time.components.seconds)
+        frame = self.add_text_line(frame, "Mean time in queue:",
+                                   text_left, l1_top,
+                                   fontScale=scale, thickness=thickness)
+        frame = self.add_text_line(frame, q_time_str,
+                                   text_left, l1_top + spacing,
+                                   fontScale=scale, thickness=thickness)
+        return frame
+
+    def add_text_to_visualisation(self, frame, time, counters):
+        """
+        Add multiple lines of text to the visualisation for the time and
+        customer counters
+        """
+        frame = self.add_time_to_frame(time, frame)
+        frame = self.add_counters_to_frame(counters, frame)
+        frame = self.add_queue_time_to_frame(time, frame)
         return frame
 
     def create_frame(self, time, data):
