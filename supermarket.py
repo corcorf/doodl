@@ -1,10 +1,13 @@
+import os
+from datetime import datetime, timedelta
+import logging
 import pandas as pd
 import numpy as np
 import numpy.ma as ma
-from datetime import datetime, timedelta
-import logging
 from matplotlib import cm
 import cv2
+import imageio
+from PIL import Image
 
 from data_processing import get_aisles
 from customers import JoeCustomer
@@ -432,37 +435,48 @@ class SuperMarket:
 
         return frame
 
-    def loop_frames(self, df):
+    def create_frame(self, time, data):
+        """
+        create a frame in the animation for time, based on data
+        returns the frame image
+        """
+        frame = self.img.copy()
+        counters = {"Total": 0, "Aisles": 0, "Checkout": 0}
+        for aisle, ncustomers in data.iteritems():
+            mask = ma.where(
+                (self.visualisation_matrices[aisle] < ncustomers)[:, :, 0]
+            )
+            frame[mask] = self.aisle_colour
+            counters["Total"] += ncustomers
+            if aisle == "checkout":
+                counters["Checkout"] += ncustomers
+            else:
+                counters["Aisles"] += ncustomers
+        return self.add_text_to_visualisation(frame, time, counters)
+
+    def loop_frames(self, df, image_path=None):
         """
         Create frames in visualisation for every timestep
         """
-
+        if image_path is not None:
+            if not os.path.exists(image_path):
+                os.mkdir(image_path)
+            existing_pngs = [filename for filename in os.listdir(image_path)
+                             if filename.endswith(".png")]
+            for png in existing_pngs:
+                os.remove(os.path.join(image_path, png))
         for time, data in df.iterrows():
-            frame = self.img.copy()
-
-            counters = {"Total": 0, "Aisles": 0, "Checkout": 0}
-
-            for aisle, ncustomers in data.iteritems():
-                mask = ma.where(
-                    (self.visualisation_matrices[aisle] < ncustomers)[:, :, 0]
-                )
-                frame[mask] = self.aisle_colour
-                counters["Total"] += ncustomers
-
-                if aisle == "checkout":
-                    counters["Checkout"] += ncustomers
-                else:
-                    counters["Aisles"] += ncustomers
-
-            frame = self.add_text_to_visualisation(frame, time, counters)
-
+            frame = self.create_frame(time, data)
+            if image_path is not None:
+                filename = f"doodl_{str(time).replace(':', '')}.png"
+                im = Image.fromarray(frame)
+                im.save(os.path.join(image_path, filename))
             cv2.imshow('frame', frame)
             if cv2.waitKey(100) & 0xFF == ord('q'):
                 break
-
         cv2.destroyAllWindows()
 
-    def loop_frames_alt(self, df):
+    def loop_frames_alt(self, df, image_path=None):
         """
         Create frames in visualisation for every timestep
         """
@@ -512,7 +526,7 @@ class SuperMarket:
 
         cv2.destroyAllWindows()
 
-    def visualise(self):
+    def visualise(self, image_path=None):
         """
         Visualise customer movements from the supermarkets records (which must
         already have been simulated)
@@ -524,11 +538,11 @@ class SuperMarket:
 
             self.set_visualisation_params()
             self.set_up_visualisation_matrices()
-            self.loop_frames(df)
+            self.loop_frames(df, image_path=image_path)
         else:
             logging.warning("Supermarket has no records to visualize")
 
-    def visualise_alt(self):
+    def visualise_alt(self, image_path=None):
         """
         Alternative visualisation of customer movements from the supermarkets
         records (which must have already been simulated)
@@ -540,14 +554,27 @@ class SuperMarket:
 
             self.set_visualisation_params()
             self.set_up_visualisation_matrices()
-            self.loop_frames_alt(df)
+            self.loop_frames_alt(df, image_path=image_path)
         else:
             logging.warning("Supermarket has no records to visualize")
 
 
+def make_gif(image_path, gif_path, fps=4):
+    """
+    Make a gif from the animation
+    """
+    images = [filename
+              for filename in os.listdir(image_path)
+              if filename.endswith(".png")]
+    images.sort()
+    images = [imageio.imread(os.path.join(image_path, filename))
+              for filename in images]
+    imageio.mimsave(gif_path, images, fps=fps)
+
+
 def main(n_checkouts=4, checkout_rate=0.8, date="2020-02-27",
          save_records=False, filename="simulated_customer_records.csv",
-         show_colour=False):
+         show_colour=False, image_path=None, gif_path=None):
     """
     Run and visualise simulation with n_checkouts
     """
@@ -562,9 +589,12 @@ def main(n_checkouts=4, checkout_rate=0.8, date="2020-02-27",
     if save_records:
         records.to_csv(filename)
     if show_colour:
-        doodlmarkt.visualise_alt()
+        doodlmarkt.visualise_alt(image_path=image_path)
     else:
-        doodlmarkt.visualise()
+        doodlmarkt.visualise(image_path=image_path)
+
+    if image_path is not None:
+        make_gif(image_path, gif_path)
 
 
 if __name__ == "__main__":

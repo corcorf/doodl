@@ -37,6 +37,18 @@ def get_arguments():
         default=False, const=True,
         help='If used visualisation includes colour representing entry time'
     )
+    parser.add_argument(
+        '--image_path', dest='image_path', type=str, nargs='?',
+        default=None, const="images",
+        help='if specified, images from each frame will be saved to file'
+    )
+    parser.add_argument(
+        '--gif_path', dest='gif_path', type=str, nargs='?',
+        default=None, const="images/doodl.gif",
+        help='If used animation frames in image_path will be used to \
+        create a gif at the specified file path'
+    )
+
     return parser.parse_args()
 
 
