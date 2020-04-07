@@ -242,7 +242,7 @@ class SuperMarket:
 
     def set_visualisation_params(self):
         """Set up the parameters for the visualisation function"""
-        self.img = cv2.imread('market.png')
+        self.img = cv2.imread('images/market.png')
         self.img_height, self.img_width = self.img.shape[:2]
 
         self.aisle_colour = [200, 0, 200]
